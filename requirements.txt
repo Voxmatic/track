@@ -2,6 +2,6 @@ requests
 lxml
 streamlit
 pandas
-git+https://github.com/rongardF/tvdatafeed.git
+git+https://github.com/StreamAlpha/tvdatafeed.git
 setuptools
 wheel
