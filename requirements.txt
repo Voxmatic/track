@@ -3,3 +3,5 @@ lxml
 streamlit
 pandas
 git+https://github.com/rongardF/tvdatafeed.git
+setuptools
+wheel
