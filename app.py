@@ -115,14 +115,14 @@ with st.expander("➕ Add Trade"):
 
     if st.button("Add"):
         add_trade(sym.upper(),buy,sl,tgt)
-        st.experimental_rerun()
+        st.rerun()
 
 if st.button("🔄 Refresh Prices"):
     df = load()
     for _,r in df.iterrows():
         price = fetch_price(r.symbol)
         update_price(r.id,price)
-    st.experimental_rerun()
+    st.rerun()
 
 df = load()
 
@@ -158,7 +158,7 @@ def draw(tab,status):
                 st.session_state.edit=r.id
             if c2.button("Delete",key=f"d{r.id}"):
                 delete_trade(r.id)
-                st.experimental_rerun()
+                st.rerun()
 
 for t,s in zip(tabs,["Pending","Active","Target Hit","Stoploss Hit"]):
     draw(t,s)
@@ -176,7 +176,7 @@ if "edit" in st.session_state:
     if st.button("Save"):
         edit_trade(tr.id,b,sl,t)
         del st.session_state.edit
-        st.experimental_rerun()
+        st.rerun()
 
 # ---------------- ANALYTICS ---------------- #
 
