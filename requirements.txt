@@ -1,3 +1,5 @@
+setuptools
+wheel
 streamlit
 pandas
 numpy
