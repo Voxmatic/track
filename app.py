@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 # ---------------- CONFIG ---------------- #
-
+#new 
 BASE = Path(__file__).parent
 DB = BASE / "trades.db"
 
