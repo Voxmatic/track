@@ -5,7 +5,7 @@ import yfinance as yf
 from pathlib import Path
 from datetime import datetime
 
-# ---------------- CONFIG ---------------- #
+# ================= CONFIG ================= #
 
 BASE = Path(__file__).parent
 DB = BASE / "trades.db"
@@ -15,7 +15,7 @@ st.set_page_config("Trading Dashboard", layout="wide")
 START_CAPITAL = 100000
 RISK_PER_TRADE = 0.01
 
-# ---------------- DATABASE ---------------- #
+# ================= DATABASE ================= #
 
 def db():
     return sqlite3.connect(DB, check_same_thread=False)
@@ -30,12 +30,13 @@ with db() as con:
         target REAL,
         status TEXT,
         ltp REAL,
+        entered INTEGER,
         created TEXT,
         closed TEXT
     )
     """)
 
-# ---------------- PRICE FETCH ---------------- #
+# ================= PRICE ================= #
 
 @st.cache_data(show_spinner=False)
 def fetch_price(symbol):
@@ -46,16 +47,17 @@ def fetch_price(symbol):
     except:
         return None
 
-# ---------------- CRUD ---------------- #
+# ================= CRUD ================= #
 
 def load():
     return pd.read_sql("SELECT * FROM trades", db())
 
-def add_trade(s,b,sl,t):
+def add_trade(s,b,sl,t,entered):
+    status = "Active" if entered else "Pending"
     with db() as con:
         con.execute(
-            "INSERT INTO trades VALUES(NULL,?,?,?,?,?,?,?,?)",
-            (s,b,sl,t,"Pending",None,str(datetime.now()),None)
+            "INSERT INTO trades VALUES(NULL,?,?,?,?,?,?,?,?,?)",
+            (s,b,sl,t,status,None,int(entered),str(datetime.now()),None)
         )
 
 def update_price(i,p):
@@ -78,16 +80,31 @@ def edit_trade(i,b,sl,t):
     with db() as con:
         con.execute("UPDATE trades SET buy=?,sl=?,target=? WHERE id=?", (b,sl,t,i))
 
-# ---------------- LOGIC ---------------- #
+# ================= LIFECYCLE LOGIC ================= #
 
 def trade_status(r):
-    if r.ltp is None or r.ltp < r.buy:
-        return "Pending"
+
+    if r.status in ["Target Hit","Stoploss Hit"]:
+        return r.status
+
+    if r.ltp is None:
+        return r.status
+
     if r.ltp >= r.target:
         return "Target Hit"
+
     if r.ltp <= r.sl:
         return "Stoploss Hit"
-    return "Active"
+
+    if r.status == "Active":
+        return "Active"
+
+    if r.ltp >= r.buy:
+        return "Active"
+
+    return "Pending"
+
+# ================= ANALYTICS HELPERS ================= #
 
 def position_size(capital, buy, sl):
     risk = capital * RISK_PER_TRADE
@@ -97,7 +114,7 @@ def position_size(capital, buy, sl):
 def r_multiple(entry, exit, sl):
     return round((exit-entry)/(entry-sl),2)
 
-# ---------------- STYLE ---------------- #
+# ================= STYLE ================= #
 
 st.markdown("""
 <style>
@@ -107,7 +124,7 @@ st.markdown("""
 </style>
 """,unsafe_allow_html=True)
 
-# ---------------- UI ---------------- #
+# ================= UI ================= #
 
 st.title("📈 Trading Dashboard")
 
@@ -117,8 +134,9 @@ with st.expander("➕ Add Trade"):
     b=c2.number_input("Buy",0.0)
     sl=c3.number_input("Stoploss",0.0)
     t=c4.number_input("Target",0.0)
+    entered=st.checkbox("Already entered in trade?")
     if st.button("Add Trade"):
-        add_trade(s.upper(),b,sl,t)
+        add_trade(s.upper(),b,sl,t,entered)
         st.rerun()
 
 if st.button("🔄 Refresh Prices"):
@@ -129,16 +147,16 @@ if st.button("🔄 Refresh Prices"):
 
 df=load()
 
-# ---------------- STATUS UPDATE ---------------- #
+# ================= STATUS UPDATE ================= #
 
 for _,r in df.iterrows():
-    s = trade_status(r)
-    if s != r.status:
-        update_status(r.id,s)
-        if s in ["Target Hit","Stoploss Hit"]:
+    new_status = trade_status(r)
+    if new_status != r.status:
+        update_status(r.id,new_status)
+        if new_status in ["Target Hit","Stoploss Hit"]:
             close_trade(r.id)
 
-df = load()
+df=load()
 
 tabs = st.tabs(["Pending","Active","Target Hit","Stoploss Hit","Analytics"])
 
@@ -156,32 +174,30 @@ def render(tab,status):
             <b>{r.symbol}</b><br>
             Buy {r.buy} | SL {r.sl} | Target {r.target}<br>
             LTP {r.ltp}<br>
+            Entered: {"Yes" if r.entered else "No"}<br>
             <span class="{col}">P&L {round(pnl,2)}</span>
             </div>
             """,unsafe_allow_html=True)
 
-            c1,c2,c3 = st.columns(3)
+            c1,c2=st.columns(2)
             if c1.button("Edit",key=f"e{r.id}"):
                 st.session_state.edit=r.id
             if c2.button("Delete",key=f"d{r.id}"):
                 delete_trade(r.id)
                 st.rerun()
-            if c3.button("Refresh",key=f"r{r.id}"):
-                update_price(r.id, fetch_price(r.symbol))
-                st.rerun()
 
 for t,s in zip(tabs,["Pending","Active","Target Hit","Stoploss Hit"]):
     render(t,s)
 
-# ---------------- EDIT ---------------- #
+# ================= EDIT ================= #
 
 if "edit" in st.session_state:
-    tr = df[df.id==st.session_state.edit].iloc[0]
+    tr=df[df.id==st.session_state.edit].iloc[0]
     st.subheader("Edit Trade")
     b=st.number_input("Buy",value=tr.buy)
     sl=st.number_input("SL",value=tr.sl)
     t=st.number_input("Target",value=tr.target)
-    if st.button("Save Changes"):
+    if st.button("Save"):
         edit_trade(tr.id,b,sl,t)
         del st.session_state.edit
         st.rerun()
@@ -190,7 +206,7 @@ if "edit" in st.session_state:
 
 with tabs[4]:
 
-    closed = df[df.status.isin(["Target Hit","Stoploss Hit"])].copy()
+    closed=df[df.status.isin(["Target Hit","Stoploss Hit"])].copy()
     if closed.empty:
         st.info("No closed trades yet")
         st.stop()
@@ -198,62 +214,51 @@ with tabs[4]:
     closed["created"]=pd.to_datetime(closed.created)
     closed["closed"]=pd.to_datetime(closed.closed)
 
-    capital = START_CAPITAL
-    records=[]
+    capital=START_CAPITAL
+    rows=[]
 
     for _,r in closed.sort_values("closed").iterrows():
-        qty = position_size(capital,r.buy,r.sl)
-        exit_price = r.target if r.status=="Target Hit" else r.sl
-        pnl = (exit_price-r.buy)*qty
-        capital += pnl
+        qty=position_size(capital,r.buy,r.sl)
+        exit_price=r.target if r.status=="Target Hit" else r.sl
+        pnl=(exit_price-r.buy)*qty
+        capital+=pnl
 
-        records.append({
+        rows.append({
             "Symbol":r.symbol,
             "Qty":qty,
-            "Exit":exit_price,
             "PnL":round(pnl,2),
             "Equity":round(capital,2),
             "R":r_multiple(r.buy,exit_price,r.sl),
             "Days":(r.closed-r.created).days
         })
 
-    perf = pd.DataFrame(records)
+    perf=pd.DataFrame(rows)
 
     st.subheader("📈 Equity Curve (Numeric)")
     st.dataframe(perf[["Equity"]])
 
-    peak = perf.Equity.cummax()
-    drawdown = ((perf.Equity-peak)/peak)*100
-    max_dd = round(drawdown.min(),2)
+    peak=perf.Equity.cummax()
+    drawdown=((perf.Equity-peak)/peak)*100
+    max_dd=round(drawdown.min(),2)
 
-    closed["month"]=closed.closed.dt.to_period("M")
-    monthly = closed.groupby("month").size().reset_index(name="Trades")
+    years=(closed.closed.max()-closed.created.min()).days/365
+    cagr=round(((capital/START_CAPITAL)**(1/years)-1)*100,2) if years>0 else 0
 
-    years = (closed.closed.max()-closed.created.min()).days/365
-    cagr = round(((capital/START_CAPITAL)**(1/years)-1)*100,2) if years>0 else 0
-
-    c1,c2,c3,c4 = st.columns(4)
+    c1,c2,c3,c4=st.columns(4)
     c1.metric("Final Capital",round(capital,2))
-    c2.metric("Total Return %",round((capital/START_CAPITAL-1)*100,2))
+    c2.metric("Return %",round((capital/START_CAPITAL-1)*100,2))
     c3.metric("Max Drawdown %",max_dd)
     c4.metric("CAGR %",cagr)
 
     st.divider()
 
-    c5,c6,c7,c8 = st.columns(4)
+    c5,c6,c7,c8=st.columns(4)
     c5.metric("Avg R",round(perf.R.mean(),2))
     c6.metric("Best R",round(perf.R.max(),2))
     c7.metric("Worst R",round(perf.R.min(),2))
     c8.metric("Avg Hold Days",round(perf.Days.mean(),1))
 
-    st.divider()
-
-    st.subheader("📆 Monthly Trade Count")
-    st.dataframe(monthly)
-
-    st.divider()
-
-    st.subheader("📋 Trade Performance Log")
+    st.subheader("📋 Trade Log")
     st.dataframe(perf)
 
-st.caption("Cloud stable • Manual refresh • Capital based analytics • No scraping dependencies")
+st.caption("Cloud-stable • True lifecycle • Capital based analytics • No dependency failures")
