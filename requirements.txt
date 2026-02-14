@@ -1,8 +1,6 @@
-setuptools
-wheel
 streamlit
 pandas
 numpy
 requests
 lxml
-git+https://github.com/rongardF/tvdatafeed.git
+yfinance
