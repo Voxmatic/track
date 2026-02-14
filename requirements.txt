@@ -1,7 +1,6 @@
-requests
-lxml
 streamlit
 pandas
-git+https://github.com/StreamAlpha/tvdatafeed.git
-setuptools
-wheel
+numpy
+requests
+lxml
+git+https://github.com/rongardF/tvdatafeed.git
