@@ -4,3 +4,4 @@ numpy
 requests
 lxml
 yfinance
+psycopg2-binary
