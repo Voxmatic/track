@@ -1,40 +1,32 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import yfinance as yf
-from pathlib import Path
+import psycopg2
 from datetime import datetime
 
 # ================= CONFIG ================= #
-
-BASE = Path(__file__).parent
-DB = BASE / "trades.db"
 
 st.set_page_config("Trading Dashboard", layout="wide")
 
 START_CAPITAL = 100000
 RISK_PER_TRADE = 0.01
 
-# ================= DATABASE ================= #
+# ======== SUPABASE CONNECTION ======== #
+
+DB_HOST = st.secrets["DB_HOST"]
+DB_NAME = st.secrets["DB_NAME"]
+DB_USER = st.secrets["DB_USER"]
+DB_PASS = st.secrets["DB_PASS"]
+DB_PORT = st.secrets["DB_PORT"]
 
 def db():
-    return sqlite3.connect(DB, check_same_thread=False)
-
-with db() as con:
-    con.execute("""
-    CREATE TABLE IF NOT EXISTS trades(
-        id INTEGER PRIMARY KEY,
-        symbol TEXT,
-        buy REAL,
-        sl REAL,
-        target REAL,
-        status TEXT,
-        ltp REAL,
-        entered INTEGER,
-        created TEXT,
-        closed TEXT
+    return psycopg2.connect(
+        host=DB_HOST,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASS,
+        port=DB_PORT
     )
-    """)
 
 # ================= PRICE ================= #
 
@@ -50,37 +42,38 @@ def fetch_price(symbol):
 # ================= CRUD ================= #
 
 def load():
-    return pd.read_sql("SELECT * FROM trades", db())
+    with db() as con:
+        return pd.read_sql("SELECT * FROM trades ORDER BY id DESC", con)
+
+def execute(q,params=None):
+    with db() as con:
+        cur=con.cursor()
+        cur.execute(q,params or [])
+        con.commit()
 
 def add_trade(s,b,sl,t,entered):
-    status = "Active" if entered else "Pending"
-    with db() as con:
-        con.execute(
-            "INSERT INTO trades VALUES(NULL,?,?,?,?,?,?,?,?,?)",
-            (s,b,sl,t,status,None,int(entered),str(datetime.now()),None)
-        )
+    status="Active" if entered else "Pending"
+    execute("""
+        INSERT INTO trades(symbol,buy,sl,target,status,ltp,entered,created)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+    """,(s,b,sl,t,status,None,entered,datetime.now()))
 
 def update_price(i,p):
-    with db() as con:
-        con.execute("UPDATE trades SET ltp=? WHERE id=?", (p,i))
+    execute("UPDATE trades SET ltp=%s WHERE id=%s",(p,i))
 
 def update_status(i,s):
-    with db() as con:
-        con.execute("UPDATE trades SET status=? WHERE id=?", (s,i))
+    execute("UPDATE trades SET status=%s WHERE id=%s",(s,i))
 
 def close_trade(i):
-    with db() as con:
-        con.execute("UPDATE trades SET closed=? WHERE id=?", (str(datetime.now()),i))
+    execute("UPDATE trades SET closed=%s WHERE id=%s",(datetime.now(),i))
 
 def delete_trade(i):
-    with db() as con:
-        con.execute("DELETE FROM trades WHERE id=?", (i,))
+    execute("DELETE FROM trades WHERE id=%s",(i,))
 
 def edit_trade(i,b,sl,t):
-    with db() as con:
-        con.execute("UPDATE trades SET buy=?,sl=?,target=? WHERE id=?", (b,sl,t,i))
+    execute("UPDATE trades SET buy=%s,sl=%s,target=%s WHERE id=%s",(b,sl,t,i))
 
-# ================= LIFECYCLE LOGIC ================= #
+# ================= LIFECYCLE ================= #
 
 def trade_status(r):
 
@@ -104,14 +97,14 @@ def trade_status(r):
 
     return "Pending"
 
-# ================= ANALYTICS HELPERS ================= #
+# ================= ANALYTICS ================= #
 
-def position_size(capital, buy, sl):
-    risk = capital * RISK_PER_TRADE
-    per_share = abs(buy-sl)
-    return int(risk/per_share) if per_share else 0
+def position_size(capital,buy,sl):
+    risk=capital*RISK_PER_TRADE
+    per=abs(buy-sl)
+    return int(risk/per) if per else 0
 
-def r_multiple(entry, exit, sl):
+def r_multiple(entry,exit,sl):
     return round((exit-entry)/(entry-sl),2)
 
 # ================= STYLE ================= #
@@ -129,12 +122,12 @@ st.markdown("""
 st.title("📈 Trading Dashboard")
 
 with st.expander("➕ Add Trade"):
-    c1,c2,c3,c4 = st.columns(4)
-    s=c1.text_input("Symbol (NSE)")
+    c1,c2,c3,c4=st.columns(4)
+    s=c1.text_input("Symbol")
     b=c2.number_input("Buy",0.0)
     sl=c3.number_input("Stoploss",0.0)
     t=c4.number_input("Target",0.0)
-    entered=st.checkbox("Already entered in trade?")
+    entered=st.checkbox("Already entered?")
     if st.button("Add Trade"):
         add_trade(s.upper(),b,sl,t,entered)
         st.rerun()
@@ -142,7 +135,7 @@ with st.expander("➕ Add Trade"):
 if st.button("🔄 Refresh Prices"):
     df=load()
     for _,r in df.iterrows():
-        update_price(r.id, fetch_price(r.symbol))
+        update_price(r.id,fetch_price(r.symbol))
     st.rerun()
 
 df=load()
@@ -150,15 +143,15 @@ df=load()
 # ================= STATUS UPDATE ================= #
 
 for _,r in df.iterrows():
-    new_status = trade_status(r)
-    if new_status != r.status:
-        update_status(r.id,new_status)
-        if new_status in ["Target Hit","Stoploss Hit"]:
+    s=trade_status(r)
+    if s!=r.status:
+        update_status(r.id,s)
+        if s in ["Target Hit","Stoploss Hit"]:
             close_trade(r.id)
 
 df=load()
 
-tabs = st.tabs(["Pending","Active","Target Hit","Stoploss Hit","Analytics"])
+tabs=st.tabs(["Pending","Active","Target Hit","Stoploss Hit","Analytics"])
 
 def render(tab,status):
     with tab:
@@ -174,7 +167,6 @@ def render(tab,status):
             <b>{r.symbol}</b><br>
             Buy {r.buy} | SL {r.sl} | Target {r.target}<br>
             LTP {r.ltp}<br>
-            Entered: {"Yes" if r.entered else "No"}<br>
             <span class="{col}">P&L {round(pnl,2)}</span>
             </div>
             """,unsafe_allow_html=True)
@@ -225,7 +217,6 @@ with tabs[4]:
 
         rows.append({
             "Symbol":r.symbol,
-            "Qty":qty,
             "PnL":round(pnl,2),
             "Equity":round(capital,2),
             "R":r_multiple(r.buy,exit_price,r.sl),
@@ -238,27 +229,15 @@ with tabs[4]:
     st.dataframe(perf[["Equity"]])
 
     peak=perf.Equity.cummax()
-    drawdown=((perf.Equity-peak)/peak)*100
-    max_dd=round(drawdown.min(),2)
+    dd=((perf.Equity-peak)/peak)*100
 
     years=(closed.closed.max()-closed.created.min()).days/365
-    cagr=round(((capital/START_CAPITAL)**(1/years)-1)*100,2) if years>0 else 0
+    cagr=round(((capital/START_CAPITAL)**(1/years)-1)*100,2)
 
     c1,c2,c3,c4=st.columns(4)
     c1.metric("Final Capital",round(capital,2))
     c2.metric("Return %",round((capital/START_CAPITAL-1)*100,2))
-    c3.metric("Max Drawdown %",max_dd)
+    c3.metric("Max DD %",round(dd.min(),2))
     c4.metric("CAGR %",cagr)
 
-    st.divider()
-
-    c5,c6,c7,c8=st.columns(4)
-    c5.metric("Avg R",round(perf.R.mean(),2))
-    c6.metric("Best R",round(perf.R.max(),2))
-    c7.metric("Worst R",round(perf.R.min(),2))
-    c8.metric("Avg Hold Days",round(perf.Days.mean(),1))
-
-    st.subheader("📋 Trade Log")
-    st.dataframe(perf)
-
-st.caption("Cloud-stable • True lifecycle • Capital based analytics • No dependency failures")
+st.caption("Supabase persistent DB • No data loss • Cloud production ready")
